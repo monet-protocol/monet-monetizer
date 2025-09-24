@@ -1,0 +1,52 @@
+{
+  "accessManager": "0x1B35E6C9F263b4930f007FE018C23b0A339Fb539",
+  "wallets": {
+    "dao": "0xBabB038737A7Ae0DcA02075E79ed5B7704C29827"
+  },
+  "tokens": {
+    "usdmo": "0xb06fff5A1691446B6fD78d8CfA1751AB569d7213"
+  },
+  "monetizer": {
+    "usdmo": {
+      "collaterals": [
+        {
+          "token": "0xaa61035c61e3a6c4471687178166eb3512d9b9c4",
+          "oracle": {
+            "oracleType": "CHAINLINK_FEEDS",
+            "targetType": "STABLE",
+            "quoteType": "UNIT",
+            "circuitChainlink": ["0xf49f5f551dce20699ce7c0c3070ba5dc61d7ea24"],
+            "stalePeriods": [86400],
+            "circuitChainIsMultiplied": [1],
+            "chainlinkDecimals": [8],
+            "hyperparameters": {
+              "userDeviation": 500000000000000,
+              "burnRatioDeviation": 0
+            }
+          },
+          "xMintFee": [0],
+          "yMintFee": [0],
+          "xBurnFee": [1000000000],
+          "yBurnFee": [0]
+        }
+      ],
+      "redemptionSetup": {
+        "xRedeemFee": [750000000, 850000000, 950000000, 970000000],
+        "yRedeemFee": [995000000, 950000000, 950000000, 995000000]
+      }
+    }
+  },
+  "savings": {
+    "usdmo": {
+      "name": "Staked USDmo",
+      "symbol": "sUSDmo"
+    }
+  },
+  "genericHarvester": {
+    "usdmo": {
+      "swapRouter": "0x88de50b233052e4fb783d4f6db78cc34fea3e9fc",
+      "tokenTransferAddress": "0x88de50b233052e4fb783d4f6db78cc34fea3e9fc",
+      "flashloan": "0x9e0DCF7a33bBde6689560C5c807dd2a3dF991277"
+    }
+  }
+}

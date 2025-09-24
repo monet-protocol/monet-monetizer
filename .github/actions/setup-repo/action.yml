@@ -1,0 +1,31 @@
+name: Setup repo
+description: Runs all steps to setup the repo (install node_modules, build, etc...)
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get bun cache directory path
+      id: bun-cache-dir-path
+      shell: bash
+      run: |
+        echo "::set-output name=dir::$(bun cache dir)"
+        echo "::set-output name=version::$(bun -v)"
+
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: 1.0.26
+
+    - uses: actions/cache@v4
+      id: bun-cache
+      with:
+        path: |
+          **/node_modules
+          ${{ steps.bun-cache-dir-path.outputs.dir }}
+
+        key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-bun-
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install

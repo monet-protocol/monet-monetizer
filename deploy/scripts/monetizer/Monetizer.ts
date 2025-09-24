@@ -1,0 +1,195 @@
+import assert from "assert";
+import { deployScript, artifacts } from "@rocketh";
+import { Abi, encodeAbiParameters, encodeFunctionData, Hex, parseAbiParameters, toFunctionSelector } from "viem";
+
+import {
+  ChainlinkFeedsConfig,
+  CollateralConfig,
+  CollateralSetupParams,
+  MorphoOracleConfig,
+  OracleReadType,
+  RedemptionSetup,
+} from "../../utils/types";
+
+import { readFileSync } from "fs";
+import { checkAddressValid, getTokenAddressFromConfig, parseToConfigData } from "../../utils";
+import { Deployment } from "rocketh";
+
+const contractName = "Monetizer";
+
+const token = "USDmo";
+
+enum FacetCutAction {
+  Add,
+  Replace,
+  Remove,
+}
+
+export default deployScript(
+  async ({ namedAccounts, network, deploy, get }) => {
+    const { deployer } = namedAccounts;
+    const chainName = network.chain.name;
+    console.log(`Network: ${JSON.stringify(network.chain)}`);
+    assert(deployer, "Missing named deployer account");
+    console.log(`Network: ${chainName} \n Deployer: ${deployer} \n Deploying ${contractName}`);
+
+    const config = parseToConfigData(JSON.parse(readFileSync(`./deploy/config/edennetTestnet/config.json`).toString()));
+
+    const tokenPAddress = getTokenAddressFromConfig(token, config);
+    if (!tokenPAddress) throw new Error(`Token ${token} address not found in config`);
+
+    const accessManager = checkAddressValid(config.accessManager, "access manager");
+
+    const monetizerConfig = config.monetizer[token.toLowerCase() as keyof typeof config.monetizer];
+    if (!monetizerConfig) throw new Error(`Monetizer config for ${token} not found in config`);
+
+    let collateralArgs = [];
+    const collaterals = monetizerConfig.collaterals;
+
+    for (const collateral of collaterals) {
+      if (!collateral) throw new Error(`Collateral ${collateral} has no oracle config`);
+      const collateralSetup = setUpCollateral(collateral);
+      collateralArgs.push(collateralSetup);
+    }
+
+    const redemptionSetup = setUpRedemption(monetizerConfig.redemptionSetup);
+
+    const initializer = get("DiamondInitializer");
+    const callData = encodeFunctionData({
+      abi: initializer.abi,
+      functionName: "initialize",
+      args: [accessManager, tokenPAddress, collateralArgs, redemptionSetup],
+    });
+
+    const facets = await getFacetsWithSelectors(get);
+
+    const cuts = facets.map((facet) => facet.cut);
+
+    const monetizer = await deploy(
+      `${contractName}_${token}`,
+      {
+        artifact: artifacts.DiamondProxy,
+        account: deployer,
+        args: [cuts, initializer.address, callData],
+      },
+      {
+        linkedData: {
+          args: [cuts, initializer.address, callData],
+        },
+      },
+    );
+
+    console.log(`Deployed contract: ${contractName}_${token}, network: ${chainName}, address: ${monetizer.address}`);
+  },
+  {
+    tags: [contractName],
+    dependencies: ["DiamondInitializer", "Facets"],
+  },
+);
+
+const getFacetsWithSelectors = async (get: <TAbi extends Abi>(name: string) => Deployment<TAbi>) => {
+  const facetsList = [
+    "DiamondCut",
+    "DiamondLoupe",
+    "SettersGovernor",
+    "SettersGuardian",
+    "Getters",
+    "Swapper",
+    "Redeemer",
+    "RewardHandler",
+  ];
+  const facets = [];
+  for (const facet of facetsList) {
+    const facetContract = get(facet);
+    const cut = {
+      facetAddress: facetContract.address,
+      action: Number(FacetCutAction.Add),
+      functionSelectors: getSelectors(facetContract),
+    };
+    facets.push({
+      facetContract,
+      cut,
+    });
+  }
+  return facets;
+};
+
+function sigsFromABI(abi: Abi): Hex[] {
+  return abi
+    .filter((fragment: any) => fragment.type === "function")
+    .map((fragment: any) => toFunctionSelector(fragment));
+}
+
+const getSelectors = (contract: Deployment<Abi>) => {
+  return sigsFromABI(contract.abi);
+};
+
+const setUpCollateral = (collateral: CollateralConfig): CollateralSetupParams => {
+  const { token, oracle, xMintFee, yMintFee, xBurnFee, yBurnFee } = collateral;
+
+  let readData: Hex = "0x";
+  if (oracle.oracleType === OracleReadType.CHAINLINK_FEEDS) {
+    const { circuitChainlink, stalePeriods, circuitChainIsMultiplied, chainlinkDecimals, quoteType } =
+      oracle as ChainlinkFeedsConfig;
+    if (
+      circuitChainlink.length != stalePeriods.length ||
+      circuitChainlink.length != circuitChainIsMultiplied.length ||
+      circuitChainlink.length != chainlinkDecimals.length
+    ) {
+      throw new Error(`Chainlink feeds config must have the same length`);
+    }
+
+    readData = encodeAbiParameters(parseAbiParameters("address[], uint32[], uint8[], uint8[], uint8"), [
+      circuitChainlink,
+      stalePeriods,
+      circuitChainIsMultiplied,
+      chainlinkDecimals,
+      quoteType,
+    ]);
+  }
+  if (oracle.oracleType === OracleReadType.MORPHO_ORACLE) {
+    const { oracleAddress, normalizationFactor } = oracle as MorphoOracleConfig;
+    if (!oracleAddress || !normalizationFactor) {
+      throw new Error(`Morpho oracle config must have an oracle address and normalization factor`);
+    }
+    readData = encodeAbiParameters(parseAbiParameters("address, uint256"), [oracleAddress, normalizationFactor]);
+  }
+
+  let targetData: Hex = encodeAbiParameters(parseAbiParameters("uint256"), [0n]);
+
+  let hyperparametersData: Hex = "0x";
+  if (oracle.hyperparameters) {
+    hyperparametersData = encodeAbiParameters(parseAbiParameters("uint128, uint128"), [
+      oracle.hyperparameters.userDeviation,
+      oracle.hyperparameters.burnRatioDeviation,
+    ]);
+  }
+
+  const oracleConfig = encodeAbiParameters(parseAbiParameters("uint8, uint8, bytes, bytes, bytes"), [
+    oracle.oracleType,
+    oracle.targetType,
+    readData,
+    targetData,
+    hyperparametersData,
+  ]);
+
+  return {
+    token,
+    targetMax: oracle.targetType === OracleReadType.MAX,
+    oracleConfig,
+    xMintFee,
+    yMintFee,
+    xBurnFee,
+    yBurnFee,
+  };
+};
+
+const setUpRedemption = (redemption?: RedemptionSetup): RedemptionSetup => {
+  if (!redemption) throw new Error(`Redemption setup not found in config`);
+  if (redemption.xRedeemFee.length !== redemption.yRedeemFee.length) {
+    throw new Error(`Redemption setup must have the same length`);
+  }
+  return redemption;
+};
+// 0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000000000000000000000000000000000a0000000000000000000000000000000000000000000000000000000000000026000000000000000000000000000000000000000000000000000000000000002a000000000000000000000000000000000000000000000000000000000000001a000000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000000e00000000000000000000000000000000000000000000000000000000000000120000000000000000000000000000000000000000000000000000000000000016000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000f49f5f551dce20699ce7c0c3070ba5dc61d7ea2400000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000e1000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000001c6bf526340000000000000000000000000000000000000000000000000000000000000000000
+// xf2238ad40000000000000000000000001b35e6c9f263b4930f007fe018c23b0a339fb5390000000000000000000000009b3a8f7cec208e247d97dee13313690977e24459000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000005c000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000020000000000000000000000000aa61035c61e3a6c4471687178166eb3512d9b9c4000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000440000000000000000000000000000000000000000000000000000000000000048000000000000000000000000000000000000000000000000000000000000004c000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000000000000000000000000000000000a0000000000000000000000000000000000000000000000000000000000000026000000000000000000000000000000000000000000000000000000000000002a000000000000000000000000000000000000000000000000000000000000001a000000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000000e00000000000000000000000000000000000000000000000000000000000000120000000000000000000000000000000000000000000000000000000000000016000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000f49f5f551dce20699ce7c0c3070ba5dc61d7ea2400000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000e1000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000001c6bf52634000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000003b9aca0000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000e00000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000002cb417800000000000000000000000000000000000000000000000000000000032a9f88000000000000000000000000000000000000000000000000000000000389fd9800000000000000000000000000000000000000000000000000000000039d106800000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000003b4e7ec000000000000000000000000000000000000000000000000000000000389fd98000000000000000000000000000000000000000000000000000000000389fd980000000000000000000000000000000000000000000000000000000003b4e7ec0

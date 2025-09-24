@@ -1,0 +1,110 @@
+name: "CI"
+
+env:
+  FOUNDRY_PROFILE: "ci"
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - "main"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup repo
+        uses: ./.github/actions/setup-repo
+
+      - name: Run solhint
+        run: bun run lint
+
+      - name: "Add lint summary"
+        run: |
+          echo "## Lint result" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Passed" >> $GITHUB_STEP_SUMMARY
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Setup repo
+        uses: ./.github/actions/setup-repo
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Compile foundry
+        run: forge build --sizes
+
+      - name: "Cache the build so that it can be re-used by the other jobs"
+        uses: "actions/cache/save@v4"
+        with:
+          key: "build-${{ github.sha }}"
+          path: |
+            cache-forge
+            out
+            node_modules
+
+      - name: "Add build summary"
+        run: |
+          echo "## Build result" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Passed" >> $GITHUB_STEP_SUMMARY
+
+  test-unit:
+    needs: ["build", "lint"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Setup repo
+        uses: ./.github/actions/setup-repo
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - uses: actions/cache/restore@v4
+        with:
+          fail-on-cache-miss: true
+          path: |
+            cache-forge
+            out
+            node_modules
+          key: "build-${{ github.sha }}"
+
+      - name: Run Foundry tests
+        run: bun run test:unit
+
+  test-invariant:
+    needs: ["build", "lint"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Setup repo
+        uses: ./.github/actions/setup-repo
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - uses: actions/cache/restore@v4
+        with:
+          fail-on-cache-miss: true
+          path: |
+            cache-forge
+            out
+            node_modules
+          key: "build-${{ github.sha }}"
+
+      - name: Run Foundry invariant tests
+        run: bun run test:invariant
