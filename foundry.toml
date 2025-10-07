@@ -38,7 +38,7 @@ runs = 8
 depth = 256
 
 [rpc_endpoints]
-edennetTestnet = "http://rpc-evreth-sequencer-edennet-1-testnet.binary.builders:8080/"
+edennetTestnet = "https://ev-reth-eden-testnet.binarybuilders.services:8545/"
 
 
 [profile.dev]
